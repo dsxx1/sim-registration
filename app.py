@@ -26,10 +26,10 @@ supabase = create_client(
     os.getenv("SUPABASE_KEY")
 )
 
-# Анти-спам константы
+# Анти-спам константы (как в боте)
 PHONE_CHECK_LIMIT = 6
-PHONE_CHECK_WINDOW = 3600
-PHONE_BLOCK_TIME = 3600
+PHONE_CHECK_WINDOW = 3600  # 1 час
+PHONE_BLOCK_TIME = 3600     # 1 час блокировки
 
 
 # ──────────────────────────────────────────────
@@ -51,16 +51,35 @@ def validate_full_name(name: str) -> bool:
     return re.match(r'^[а-яА-ЯёЁa-zA-Z\s\-]+$', name) is not None
 
 
+def parse_supabase_datetime(datetime_str: str) -> datetime:
+    """Парсит дату из Supabase (как в боте)"""
+    if not datetime_str:
+        return None
+    try:
+        if datetime_str.endswith('Z'):
+            return datetime.fromisoformat(datetime_str[:-1] + '+00:00')
+        elif 'T' in datetime_str:
+            return datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
+        else:
+            dt = datetime.fromisoformat(datetime_str.replace(' ', 'T'))
+            return dt.replace(tzinfo=timezone.utc)
+    except Exception as e:
+        logger.error(f"Error parsing datetime {datetime_str}: {e}")
+        return datetime.now(timezone.utc)
+
+
 # ──────────────────────────────────────────────
-# АНТИ-СПАМ
+# АНТИ-СПАМ (как в боте)
 # ──────────────────────────────────────────────
 
 def check_phone_spam(user_ip: str, phone: str) -> tuple:
+    """Проверяет лимит проверок номера (6 в час)"""
     now = datetime.now(timezone.utc)
     try:
         resp = supabase.table('phone_check_attempts').select('*').eq('user_id', user_ip).execute()
 
         if not resp.data:
+            # Первая проверка
             supabase.table('phone_check_attempts').insert({
                 'user_id': user_ip,
                 'attempt_count': 1,
@@ -71,38 +90,52 @@ def check_phone_spam(user_ip: str, phone: str) -> tuple:
             return False, 0, PHONE_CHECK_LIMIT - 1
 
         data = resp.data[0]
-        blocked_until = data.get('blocked_until')
+        blocked_until = parse_supabase_datetime(data.get('blocked_until'))
+        last_check = parse_supabase_datetime(data['last_check'])
 
-        if blocked_until:
-            blocked_dt = datetime.fromisoformat(blocked_until.replace('Z', '+00:00'))
-            if now < blocked_dt:
-                remaining = int((blocked_dt - now).total_seconds())
-                return True, remaining, 0
+        # Проверяем блокировку
+        if blocked_until and now < blocked_until:
+            remaining = int((blocked_until - now).total_seconds())
+            return True, remaining, 0
 
-        last_check = datetime.fromisoformat(data['last_check'].replace('Z', '+00:00'))
+        # Если блокировка истекла - сбрасываем
+        if blocked_until and now >= blocked_until:
+            supabase.table('phone_check_attempts').update({
+                'attempt_count': 1,
+                'last_check': now.isoformat(),
+                'blocked_until': None,
+                'checked_phones': [phone]
+            }).eq('user_id', user_ip).execute()
+            return False, 0, PHONE_CHECK_LIMIT - 1
+
         count = data['attempt_count']
         checked_phones = data.get('checked_phones', [])
 
-        if (now - last_check).total_seconds() > PHONE_CHECK_WINDOW:
+        # Сброс по времени (прошёл час)
+        time_since_last = (now - last_check).total_seconds()
+        if time_since_last > PHONE_CHECK_WINDOW:
             count = 0
             checked_phones = []
 
+        # Увеличиваем счётчик если новый номер
         if phone not in checked_phones:
             count += 1
             checked_phones.append(phone)
 
         attempts_left = PHONE_CHECK_LIMIT - count
 
+        # Проверяем лимит
         if count >= PHONE_CHECK_LIMIT:
-            block_until = now + timedelta(seconds=PHONE_BLOCK_TIME)
+            blocked_until = now + timedelta(seconds=PHONE_BLOCK_TIME)
             supabase.table('phone_check_attempts').update({
                 'attempt_count': count,
-                'blocked_until': block_until.isoformat(),
+                'blocked_until': blocked_until.isoformat(),
                 'last_check': now.isoformat(),
                 'checked_phones': checked_phones
             }).eq('user_id', user_ip).execute()
             return True, PHONE_BLOCK_TIME, 0
 
+        # Обновляем данные
         supabase.table('phone_check_attempts').update({
             'attempt_count': count,
             'last_check': now.isoformat(),
@@ -117,6 +150,7 @@ def check_phone_spam(user_ip: str, phone: str) -> tuple:
 
 
 def reset_phone_spam(user_ip: str):
+    """Сбрасывает лимит после успешной регистрации"""
     try:
         now = datetime.now(timezone.utc)
         supabase.table('phone_check_attempts').update({
@@ -140,26 +174,29 @@ def escape_markdown_v2(text: str) -> str:
 
 
 def send_telegram_notification(phone: str, organization: str, full_name: str, is_reregister: bool = False):
-    """
-    Отправляет уведомление в Telegram-канал/чат напрямую через Bot API (HTTP).
-    Работает с сервера Railway — не нужен прокси и не зависит от блокировок у пользователей.
-    """
+    """Отправляет уведомление в Telegram (как в боте)"""
     bot_token = os.getenv('BOT_TOKEN')
     chat_id = os.getenv('NOTIFICATION_CHAT_ID')
 
     if not bot_token or not chat_id:
-        logger.warning("Telegram notifications not configured (BOT_TOKEN or NOTIFICATION_CHAT_ID missing)")
+        logger.warning("Telegram notifications not configured")
         return
 
     action = "перерегистрирована" if is_reregister else "зарегистрирована"
     current_time = datetime.now(timezone(timedelta(hours=5))).strftime('%d.%m.%Y %H:%M')
 
+    escaped_name = escape_markdown_v2(full_name)
+    escaped_org = escape_markdown_v2(organization)
+    escaped_phone = escape_markdown_v2(phone)
+    escaped_action = escape_markdown_v2(action)
+    escaped_date = escape_markdown_v2(current_time)
+
     text = (
-        f"📢 *SIM\\-карта {escape_markdown_v2(action)}*\n\n"
-        f"👤 *Сотрудник:* {escape_markdown_v2(full_name)}\n"
-        f"📱 *Телефон:* {escape_markdown_v2(phone)}\n"
-        f"🏢 *Организация:* {escape_markdown_v2(organization)}\n"
-        f"📅 *Дата:* {escape_markdown_v2(current_time)}"
+        f"📢 *SIM\\-карта {escaped_action}*\n\n"
+        f"👤 *Сотрудник:* {escaped_name}\n"
+        f"📱 *Телефон:* {escaped_phone}\n"
+        f"🏢 *Организация:* {escaped_org}\n"
+        f"📅 *Дата:* {escaped_date}"
     )
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -172,9 +209,9 @@ def send_telegram_notification(phone: str, organization: str, full_name: str, is
     try:
         response = httpx.post(url, json=payload, timeout=10)
         if response.status_code == 200:
-            logger.info(f"Telegram notification sent to chat_id={chat_id}")
+            logger.info(f"Telegram notification sent")
         else:
-            logger.error(f"Telegram API error {response.status_code}: {response.text}")
+            logger.error(f"Telegram API error {response.status_code}")
     except Exception as e:
         logger.error(f"send_telegram_notification exception: {e}")
 
@@ -205,10 +242,12 @@ def check_phone_api():
     if not validate_phone(phone):
         return jsonify({'error': 'Неверный формат. Нужно 10 цифр, начиная с 9'}), 400
 
+    # Проверка спама (как в боте)
     is_blocked, remaining, attempts_left = check_phone_spam(user_ip, phone)
 
     if is_blocked:
-        minutes, seconds = remaining // 60, remaining % 60
+        minutes = remaining // 60
+        seconds = remaining % 60
         return jsonify({
             'blocked': True,
             'message': f'Превышен лимит проверок. Попробуйте через {minutes} мин {seconds} сек',
@@ -216,6 +255,7 @@ def check_phone_api():
         }), 403
 
     try:
+        # Проверка в базе разрешённых номеров
         valid_check = supabase.table('valid_numbers').select('*').eq('phone', phone).execute()
         if not valid_check.data:
             return jsonify({
@@ -223,6 +263,7 @@ def check_phone_api():
                 'message': f'Номер не найден в базе. Осталось попыток: {attempts_left}'
             }), 404
 
+        # Проверка существующей регистрации
         existing = supabase.table('sim_registrations').select('*').eq('phone', phone).eq('is_active', True).execute()
         if existing.data:
             reg = existing.data[0]
@@ -260,12 +301,15 @@ def register_sim():
         return jsonify({'error': 'Некорректное ФИО. Формат: Иванов Иван Иванович'}), 400
 
     try:
+        # Проверяем существующую запись
         existing = supabase.table('sim_registrations').select('*').eq('phone', phone).eq('is_active', True).execute()
         is_reregister = bool(existing.data)
 
+        # Деактивируем старую запись
         if existing.data:
             supabase.table('sim_registrations').update({'is_active': False}).eq('phone', phone).execute()
 
+        # Создаём новую запись
         created_at = datetime.now(timezone(timedelta(hours=5))).isoformat()
         new_reg = {
             'phone': phone[:10],
@@ -278,16 +322,16 @@ def register_sim():
         }
         supabase.table('sim_registrations').insert(new_reg).execute()
 
+        # Сбрасываем спам-счётчик
         reset_phone_spam(user_ip)
 
-        # Отправка уведомления в Telegram
+        # Отправляем уведомление
         send_telegram_notification(phone, organization, full_name, is_reregister)
 
         prefix = "пере" if is_reregister else ""
         return jsonify({
             'success': True,
-            'message': f'✅ SIM-карта успешно {prefix}зарегистрирована!\n📱 {phone}\n🏢 {organization}\n👤 {full_name}',
-            'data': new_reg
+            'message': f'✅ SIM-карта успешно {prefix}зарегистрирована!'
         })
 
     except Exception as e:
