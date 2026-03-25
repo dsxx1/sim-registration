@@ -375,7 +375,7 @@
         if (name.length < 5 || name.length > 50) return false;
         
         const words = name.split(/\s+/);
-        if (words.length < 2 || words.length > 3) return false;
+        if (words.length !== 3) return false;
         
         const pattern = /^[а-яА-ЯёЁa-zA-Z\s\-]+$/;
         return pattern.test(name);
@@ -486,7 +486,7 @@
                 this.classList.add('valid');
                 this.classList.remove('invalid');
             } else {
-                status.textContent = '❌ Некорректное ФИО';
+                status.textContent = '❌ Введите ФИО полностью: фамилия, имя, отчество';
                 status.className = 'phone-status err';
                 this.classList.add('invalid');
                 this.classList.remove('valid');
