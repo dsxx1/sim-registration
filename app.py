@@ -73,7 +73,7 @@ def parse_supabase_datetime(datetime_str: str) -> datetime:
 # ──────────────────────────────────────────────
 
 def check_phone_spam(user_ip: str, phone: str) -> tuple:
-    """Проверяет лимит проверок номера (6 в час)"""
+    """Проверяет лимит проверок номера (6 в час) - увеличивает счётчик при КАЖДОЙ попытке"""
     now = datetime.now(timezone.utc)
     try:
         resp = supabase.table('phone_check_attempts').select('*').eq('user_id', user_ip).execute()
@@ -110,19 +110,25 @@ def check_phone_spam(user_ip: str, phone: str) -> tuple:
 
         count = data['attempt_count']
         checked_phones = data.get('checked_phones', [])
-
+        
         # Сброс по времени (прошёл час)
         time_since_last = (now - last_check).total_seconds()
         if time_since_last > PHONE_CHECK_WINDOW:
             count = 0
             checked_phones = []
+            logger.info(f"Reset counter for {user_ip} after {PHONE_CHECK_WINDOW}s")
 
-        # Увеличиваем счётчик если новый номер
-        if phone not in checked_phones:
-            count += 1
-            checked_phones.append(phone)
+        # Не проверяем phone not in checked_phones, а просто увеличиваем
+        count += 1
+        checked_phones.append(phone)
+        
+        # Ограничиваем список последних номеров (храним только последние 20)
+        if len(checked_phones) > 20:
+            checked_phones = checked_phones[-20:]
 
         attempts_left = PHONE_CHECK_LIMIT - count
+
+        logger.info(f"User {user_ip}: count={count}, attempts_left={attempts_left}, phone={phone}")
 
         # Проверяем лимит
         if count >= PHONE_CHECK_LIMIT:
@@ -133,6 +139,7 @@ def check_phone_spam(user_ip: str, phone: str) -> tuple:
                 'last_check': now.isoformat(),
                 'checked_phones': checked_phones
             }).eq('user_id', user_ip).execute()
+            logger.warning(f"User {user_ip} blocked for {PHONE_BLOCK_TIME}s")
             return True, PHONE_BLOCK_TIME, 0
 
         # Обновляем данные
