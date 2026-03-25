@@ -8,20 +8,20 @@
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
         :root {
-			--bg: #0f1117;
-			--surface: #1a1d27;
-			--surface2: #22263a;
-			--border: #2e3350;
-			--accent: #ef4444;
-			--accent2: #dc2626;
-			--green: #22c55e;
-			--red: #ef4444;
-			--yellow: #f59e0b;
-			--text: #e2e8f0;
-			--muted: #64748b;
-			--font-mono: 'IBM Plex Mono', monospace;
-			--font-sans: 'IBM Plex Sans', sans-serif;
-		}
+            --bg: #0f1117;
+            --surface: #1a1d27;
+            --surface2: #22263a;
+            --border: #2e3350;
+            --accent: #ef4444;
+            --accent2: #dc2626;
+            --green: #22c55e;
+            --red: #ef4444;
+            --yellow: #f59e0b;
+            --text: #e2e8f0;
+            --muted: #64748b;
+            --font-mono: 'IBM Plex Mono', monospace;
+            --font-sans: 'IBM Plex Sans', sans-serif;
+        }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -35,8 +35,8 @@
             justify-content: center;
             padding: 24px;
             background-image:
-                radial-gradient(ellipse 60% 50% at 10% 20%, rgba(79,142,247,0.07) 0%, transparent 60%),
-                radial-gradient(ellipse 50% 40% at 90% 80%, rgba(124,92,252,0.07) 0%, transparent 60%);
+                radial-gradient(ellipse 60% 50% at 10% 20%, rgba(239,68,68,0.07) 0%, transparent 60%),
+                radial-gradient(ellipse 50% 40% at 90% 80%, rgba(220,38,38,0.07) 0%, transparent 60%);
         }
 
         .card {
@@ -56,7 +56,7 @@
         }
 
         .card-header {
-            background: linear-gradient(135deg, rgba(79,142,247,0.15), rgba(124,92,252,0.15));
+            background: linear-gradient(135deg, rgba(239,68,68,0.15), rgba(220,38,38,0.15));
             border-bottom: 1px solid var(--border);
             padding: 28px 32px 24px;
         }
@@ -74,7 +74,7 @@
             border-radius: 10px;
             display: flex; align-items: center; justify-content: center;
             font-size: 20px;
-            box-shadow: 0 4px 16px rgba(79,142,247,0.3);
+            box-shadow: 0 4px 16px rgba(239,68,68,0.3);
         }
 
         .card-title {
@@ -147,7 +147,7 @@
 
         input:focus, select:focus {
             border-color: var(--accent);
-            box-shadow: 0 0 0 3px rgba(79,142,247,0.15);
+            box-shadow: 0 0 0 3px rgba(239,68,68,0.15);
         }
 
         input.valid { border-color: var(--green); }
@@ -181,8 +181,8 @@
             display: inline-flex;
             align-items: center;
             gap: 4px;
-            background: rgba(79,142,247,0.12);
-            border: 1px solid rgba(79,142,247,0.25);
+            background: rgba(239,68,68,0.12);
+            border: 1px solid rgba(239,68,68,0.25);
             border-radius: 6px;
             padding: 2px 8px;
             font-size: 11px;
@@ -203,14 +203,14 @@
             color: #fff;
             letter-spacing: 0.2px;
             transition: opacity 0.2s, transform 0.15s, box-shadow 0.2s;
-            box-shadow: 0 4px 16px rgba(79,142,247,0.25);
+            box-shadow: 0 4px 16px rgba(239,68,68,0.25);
             margin-top: 4px;
         }
 
         .btn:hover:not(:disabled) {
             opacity: 0.92;
             transform: translateY(-1px);
-            box-shadow: 0 8px 24px rgba(79,142,247,0.35);
+            box-shadow: 0 8px 24px rgba(239,68,68,0.35);
         }
 
         .btn:active:not(:disabled) { transform: translateY(0); }
@@ -233,7 +233,6 @@
         }
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        /* Toast */
         #toast {
             position: fixed;
             bottom: 28px;
@@ -258,7 +257,6 @@
         #toast.error   { border-color: var(--red); color: var(--red); }
         #toast.warning { border-color: var(--yellow); color: var(--yellow); }
 
-        /* Reregister box */
         #rereg-box {
             display: none;
             background: rgba(245,158,11,0.08);
@@ -308,7 +306,6 @@
     </div>
 
     <div class="card-body">
-        <!-- Предупреждение о перерегистрации -->
         <div id="rereg-box"></div>
 
         <!-- Телефон -->
@@ -322,22 +319,23 @@
             <div id="phone-status" class="phone-status"></div>
         </div>
 
-        <!-- Организация -->
-        <div class="field">
+        <!-- Организация (скрыта до проверки номера) -->
+        <div class="field" id="org-field" style="display: none;">
             <label>🏢 Организация</label>
             <select id="organization">
                 <option value="">— Загрузка... —</option>
             </select>
         </div>
 
-        <!-- ФИО -->
-        <div class="field">
+        <!-- ФИО (скрыто до выбора организации) -->
+        <div class="field" id="name-field" style="display: none;">
             <label>👤 ФИО полностью</label>
             <input type="text" id="fullName"
                    placeholder="Иванов Иван Иванович" maxlength="50">
+            <div id="name-status" class="phone-status" style="margin-top: 6px;"></div>
         </div>
 
-        <button class="btn" id="submitBtn" disabled>Зарегистрировать SIM-карту</button>
+        <button class="btn" id="submitBtn" style="display: none;" disabled>Зарегистрировать SIM-карту</button>
 
         <hr class="divider">
 
@@ -347,7 +345,7 @@
         </div>
         <div class="info-row">
             <span>→</span>
-            <span>ФИО: фамилия, имя, отчество полностью</span>
+            <span>ФИО: фамилия, имя, отчество полностью (2-3 слова, только буквы)</span>
         </div>
     </div>
 </div>
@@ -356,9 +354,9 @@
 
 <script>
     let isPhoneValid = false;
+    let isOrgSelected = false;
     let checkTimeout = null;
 
-    // ── Загрузка организаций ────────────────────────────────
     async function loadOrganizations() {
         try {
             const r = await fetch('/api/organizations');
@@ -375,7 +373,15 @@
         }
     }
 
-    // ── Проверка телефона ───────────────────────────────────
+    function validateName(name) {
+        name = name.trim();
+        if (name.length < 5 || name.length > 50) return false;
+        const words = name.split(/\s+/);
+        if (words.length < 2 || words.length > 3) return false;
+        const pattern = /^[а-яА-ЯёЁa-zA-Z\s\-]+$/;
+        return pattern.test(name);
+    }
+
     document.getElementById('phone').addEventListener('input', function () {
         clearTimeout(checkTimeout);
         const phone = this.value.replace(/\D/g, '');
@@ -386,6 +392,9 @@
         status.className = 'phone-status';
         isPhoneValid = false;
         document.getElementById('rereg-box').style.display = 'none';
+        document.getElementById('org-field').style.display = 'none';
+        document.getElementById('name-field').style.display = 'none';
+        document.getElementById('submitBtn').style.display = 'none';
         this.classList.remove('valid', 'invalid');
         updateBtn();
 
@@ -396,9 +405,10 @@
     });
 
     async function checkPhone(phone) {
-        const input  = document.getElementById('phone');
+        const input = document.getElementById('phone');
         const status = document.getElementById('phone-status');
-        const rereg  = document.getElementById('rereg-box');
+        const rereg = document.getElementById('rereg-box');
+        
         try {
             const r = await fetch('/api/check-phone', {
                 method: 'POST',
@@ -416,17 +426,19 @@
                 rereg.innerHTML =
                     `⚠️ Номер уже зарегистрирован:\n` +
                     `👤 ${d.full_name}\n🏢 ${d.organization}\n📅 ${d.created_at}\n\n` +
-                    `При сохранении будет выполнена <strong>перерегистрация</strong>.`;
+                    `При сохранении будет выполнена перерегистрация.`;
                 rereg.style.display = 'block';
-                status.textContent = badge(d.attempts_left) + ' Будет перерегистрация';
+                status.innerHTML = `<span class="attempts-badge">попыток: ${d.attempts_left}</span> Будет перерегистрация`;
                 status.className = 'phone-status warn';
                 input.classList.add('valid');
                 isPhoneValid = true;
+                showOrgField();
             } else if (d.valid) {
-                status.innerHTML = badge(d.attempts_left) + ' Номер подтверждён';
+                status.innerHTML = `<span class="attempts-badge">попыток: ${d.attempts_left}</span> Номер подтверждён`;
                 status.className = 'phone-status ok';
                 input.classList.add('valid');
                 isPhoneValid = true;
+                showOrgField();
             } else {
                 status.textContent = '✗ ' + (d.message || 'Номер не найден в системе');
                 status.className = 'phone-status err';
@@ -441,30 +453,68 @@
         updateBtn();
     }
 
-    function badge(n) {
-        return `<span class="attempts-badge">попыток: ${n}</span> `;
+    function showOrgField() {
+        document.getElementById('org-field').style.display = 'block';
+        if (!document.getElementById('organization').hasChildNodes() || 
+            document.getElementById('organization').children.length <= 1) {
+            loadOrganizations();
+        }
     }
 
-    // ── Обновление кнопки ───────────────────────────────────
+    document.getElementById('organization').addEventListener('change', function() {
+        const org = this.value;
+        if (org && org !== '— Загрузка... —' && org !== '— Выберите организацию —') {
+            isOrgSelected = true;
+            document.getElementById('name-field').style.display = 'block';
+            document.getElementById('submitBtn').style.display = 'block';
+            document.getElementById('fullName').focus();
+        } else {
+            isOrgSelected = false;
+            document.getElementById('name-field').style.display = 'none';
+            document.getElementById('submitBtn').style.display = 'none';
+        }
+        updateBtn();
+    });
+
+    document.getElementById('fullName').addEventListener('input', function() {
+        const name = this.value.trim();
+        const status = document.getElementById('name-status');
+        
+        if (name.length > 0) {
+            if (validateName(name)) {
+                status.textContent = '✅ ФИО корректно';
+                status.className = 'phone-status ok';
+                this.classList.add('valid');
+                this.classList.remove('invalid');
+            } else {
+                status.textContent = '❌ ФИО должно быть: фамилия, имя, отчество (2-3 слова, только буквы)';
+                status.className = 'phone-status err';
+                this.classList.add('invalid');
+                this.classList.remove('valid');
+            }
+        } else {
+            status.textContent = '';
+            this.classList.remove('valid', 'invalid');
+        }
+        updateBtn();
+    });
+
     function updateBtn() {
         const phone = document.getElementById('phone').value;
-        const org   = document.getElementById('organization').value;
-        const name  = document.getElementById('fullName').value.trim();
-        document.getElementById('submitBtn').disabled =
-            !(isPhoneValid && org && name.length >= 5 && phone.length === 10);
+        const org = document.getElementById('organization').value;
+        const name = document.getElementById('fullName').value.trim();
+        const btn = document.getElementById('submitBtn');
+        
+        const nameValid = validateName(name);
+        
+        btn.disabled = !(isPhoneValid && isOrgSelected && nameValid && phone.length === 10);
     }
 
-    document.getElementById('organization').addEventListener('change', updateBtn);
-    document.getElementById('fullName').addEventListener('input', updateBtn);
-
-    // ── Отправка формы ──────────────────────────────────────
-    document.querySelector('.card').addEventListener('submit', () => {});
-
     document.getElementById('submitBtn').addEventListener('click', async () => {
-        const phone        = document.getElementById('phone').value.trim();
+        const phone = document.getElementById('phone').value.trim();
         const organization = document.getElementById('organization').value;
-        const fullName     = document.getElementById('fullName').value.trim();
-        const btn          = document.getElementById('submitBtn');
+        const fullName = document.getElementById('fullName').value.trim();
+        const btn = document.getElementById('submitBtn');
 
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner"></span>Регистрация...';
@@ -481,14 +531,19 @@
                 showToast(d.message, 'success');
                 // Сброс формы
                 document.getElementById('phone').value = '';
-                document.getElementById('phone').classList.remove('valid','invalid');
+                document.getElementById('phone').classList.remove('valid', 'invalid');
                 document.getElementById('phone-status').textContent = '';
                 document.getElementById('phone-status').className = 'phone-status';
                 document.getElementById('organization').value = '';
                 document.getElementById('fullName').value = '';
+                document.getElementById('fullName').classList.remove('valid', 'invalid');
+                document.getElementById('name-status').textContent = '';
                 document.getElementById('rereg-box').style.display = 'none';
+                document.getElementById('org-field').style.display = 'none';
+                document.getElementById('name-field').style.display = 'none';
+                document.getElementById('submitBtn').style.display = 'none';
                 isPhoneValid = false;
-                updateBtn();
+                isOrgSelected = false;
             } else {
                 showToast(d.error || 'Ошибка регистрации', 'error');
             }
@@ -501,7 +556,6 @@
         }
     });
 
-    // ── Toast ───────────────────────────────────────────────
     let toastTimer;
     function showToast(text, type = 'success') {
         const t = document.getElementById('toast');
@@ -512,9 +566,6 @@
             t.className = type;
         }, type === 'success' ? 4000 : 5000);
     }
-
-    // Старт
-    loadOrganizations();
 </script>
 </body>
 </html>
