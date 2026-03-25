@@ -308,7 +308,6 @@
     <div class="card-body">
         <div id="rereg-box"></div>
 
-        <!-- Телефон -->
         <div class="field">
             <label>📱 Номер телефона</label>
             <div class="input-wrap">
@@ -319,7 +318,6 @@
             <div id="phone-status" class="phone-status"></div>
         </div>
 
-        <!-- Организация (скрыта до проверки номера) -->
         <div class="field" id="org-field" style="display: none;">
             <label>🏢 Организация</label>
             <select id="organization">
@@ -327,7 +325,6 @@
             </select>
         </div>
 
-        <!-- ФИО (скрыто до выбора организации) -->
         <div class="field" id="name-field" style="display: none;">
             <label>👤 ФИО полностью</label>
             <input type="text" id="fullName"
@@ -345,7 +342,7 @@
         </div>
         <div class="info-row">
             <span>→</span>
-            <span>ФИО: фамилия, имя, отчество полностью (2-3 слова, только буквы)</span>
+            <span>ФИО: фамилия, имя, отчество полностью</span>
         </div>
     </div>
 </div>
@@ -376,8 +373,10 @@
     function validateName(name) {
         name = name.trim();
         if (name.length < 5 || name.length > 50) return false;
+        
         const words = name.split(/\s+/);
         if (words.length < 2 || words.length > 3) return false;
+        
         const pattern = /^[а-яА-ЯёЁa-zA-Z\s\-]+$/;
         return pattern.test(name);
     }
@@ -487,7 +486,7 @@
                 this.classList.add('valid');
                 this.classList.remove('invalid');
             } else {
-                status.textContent = '❌ ФИО должно быть: фамилия, имя, отчество (2-3 слова, только буквы)';
+                status.textContent = '❌ Некорректное ФИО';
                 status.className = 'phone-status err';
                 this.classList.add('invalid');
                 this.classList.remove('valid');
@@ -505,7 +504,7 @@
         const name = document.getElementById('fullName').value.trim();
         const btn = document.getElementById('submitBtn');
         
-        const nameValid = validateName(name);
+        const nameValid = name.length >= 5 && validateName(name);
         
         btn.disabled = !(isPhoneValid && isOrgSelected && nameValid && phone.length === 10);
     }
@@ -529,7 +528,6 @@
 
             if (r.ok && d.success) {
                 showToast(d.message, 'success');
-                // Сброс формы
                 document.getElementById('phone').value = '';
                 document.getElementById('phone').classList.remove('valid', 'invalid');
                 document.getElementById('phone-status').textContent = '';
