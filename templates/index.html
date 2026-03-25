@@ -438,7 +438,7 @@
                 isPhoneValid = true;
                 showOrgField();
             } else {
-                status.textContent = '✗ ' + (d.message || 'Номер не найден в системе');
+                status.textContent = (d.message || 'Номер не найден в системе');
                 status.className = 'phone-status err';
                 input.classList.add('invalid');
                 isPhoneValid = false;
