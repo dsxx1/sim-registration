@@ -85,8 +85,8 @@ def check_phone_spam(user_ip: str, phone: str) -> tuple:
         # Получаем данные пользователя по IP
         resp = supabase.table('phone_check_attempts').select('*').eq('user_id', user_ip).execute()
         
-        # Если пользователь новый
-        if not resp.
+
+        if not resp.data:  
             supabase.table('phone_check_attempts').upsert({
                 'user_id': user_ip,
                 'attempt_count': 1,
