@@ -54,7 +54,7 @@ def validate_full_name(name: str) -> bool:
 
 
 def parse_supabase_datetime(datetime_str: str) -> datetime:
-    """Парсит дату из Supabase"""
+    """Парсит дату из Supabase. Возвращает None при ошибке."""
     if not datetime_str:
         return None
     try:
@@ -66,8 +66,8 @@ def parse_supabase_datetime(datetime_str: str) -> datetime:
             dt = datetime.fromisoformat(datetime_str.replace(' ', 'T'))
             return dt.replace(tzinfo=timezone.utc)
     except Exception as e:
-        logger.error(f"Error parsing datetime {datetime_str}: {e}")
-        return datetime.now(timezone.utc)
+        logger.error(f"Error parsing datetime '{datetime_str}': {e}")
+        return None 
 
 
 # ──────────────────────────────────────────────
@@ -86,99 +86,101 @@ def check_phone_spam(user_ip: str, phone: str) -> tuple:
         resp = supabase.table('phone_check_attempts').select('*').eq('user_id', user_ip).execute()
         
         # Если пользователь новый
-        if not resp.data:
-            supabase.table('phone_check_attempts').insert({
+        if not resp.
+            supabase.table('phone_check_attempts').upsert({
                 'user_id': user_ip,
                 'attempt_count': 1,
                 'last_check': now.isoformat(),
                 'blocked_until': None,
                 'checked_phones': [phone]
-            }).execute()
-            logger.info(f"New user {user_ip}: attempts=1, left={PHONE_CHECK_LIMIT - 1}")
+            }, on_conflict='user_id').execute()
+            logger.info(f"SPAM: New user {user_ip}, count=1, left={PHONE_CHECK_LIMIT - 1}")
             return False, 0, PHONE_CHECK_LIMIT - 1
         
         data = resp.data[0]
-        blocked_until = parse_supabase_datetime(data.get('blocked_until'))
-        last_check = parse_supabase_datetime(data['last_check'])
-        count = data['attempt_count']
-        checked_phones = data.get('checked_phones', [])
         
-        # Проверяем активную блокировку
+        # Безопасный парсинг дат
+        blocked_until_raw = data.get('blocked_until')
+        blocked_until = parse_supabase_datetime(blocked_until_raw) if blocked_until_raw else None
+        
+        last_check_raw = data.get('last_check')
+        last_check = parse_supabase_datetime(last_check_raw) if last_check_raw else None
+        
+        count = data.get('attempt_count', 0)
+        checked_phones = data.get('checked_phones', []) or []
+        
+        # 🔒 1. Проверяем активную блокировку
         if blocked_until and now < blocked_until:
             remaining = int((blocked_until - now).total_seconds())
-            logger.info(f"User {user_ip} is blocked for {remaining} seconds")
+            logger.warning(f"SPAM: User {user_ip} BLOCKED, remaining={remaining}s")
             return True, remaining, 0
         
-        # Если блокировка истекла - сбрасываем
+        # 🔄 2. Если блокировка истекла — полный сброс
         if blocked_until and now >= blocked_until:
-            count = 1
-            checked_phones = [phone]
-            supabase.table('phone_check_attempts').update({
-                'attempt_count': count,
-                'last_check': now.isoformat(),
-                'blocked_until': None,
-                'checked_phones': checked_phones
-            }).eq('user_id', user_ip).execute()
-            logger.info(f"User {user_ip} unblocked, reset to 1 attempt")
-            return False, 0, PHONE_CHECK_LIMIT - 1
-        
-        # Сброс по времени (прошёл час)
-        time_since_last = (now - last_check).total_seconds()
-        if time_since_last > PHONE_CHECK_WINDOW:
             count = 0
             checked_phones = []
-            logger.info(f"User {user_ip} reset after {PHONE_CHECK_WINDOW}s")
+            logger.info(f"SPAM: User {user_ip} unblocked, resetting counter")
         
-        # Увеличиваем счётчик
+        # 🕐 3. Сброс по времени (скользящее окно)
+        if last_check:
+            time_since_last = (now - last_check).total_seconds()
+            if time_since_last > PHONE_CHECK_WINDOW:
+                count = 0
+                checked_phones = []
+                logger.info(f"SPAM: User {user_ip} reset after {PHONE_CHECK_WINDOW}s window")
+        
+        # ➕ 4. Увеличиваем счётчик
         count += 1
         checked_phones.append(phone)
-        
-        # Ограничиваем список последних номеров (храним только последние 20)
         if len(checked_phones) > 20:
             checked_phones = checked_phones[-20:]
         
-        attempts_left = PHONE_CHECK_LIMIT - count
+        attempts_left = max(0, PHONE_CHECK_LIMIT - count)
         
-        logger.info(f"User {user_ip}: attempts={count}, left={attempts_left}, phone={phone}")
+        logger.info(f"SPAM: User {user_ip}, count={count}, left={attempts_left}, phone={phone}")
         
-        # Проверяем превышение лимита
-        if count >= PHONE_CHECK_LIMIT:
+        # 🚫 5. Превышен лимит — блокируем
+        if count > PHONE_CHECK_LIMIT:
             blocked_until = now + timedelta(seconds=PHONE_BLOCK_TIME)
-            supabase.table('phone_check_attempts').update({
+            supabase.table('phone_check_attempts').upsert({
+                'user_id': user_ip,
                 'attempt_count': count,
-                'blocked_until': blocked_until.isoformat(),
                 'last_check': now.isoformat(),
+                'blocked_until': blocked_until.isoformat(),
                 'checked_phones': checked_phones
-            }).eq('user_id', user_ip).execute()
-            logger.warning(f"User {user_ip} BLOCKED for {PHONE_BLOCK_TIME}s")
+            }, on_conflict='user_id').execute()
+            logger.warning(f"SPAM: User {user_ip} NOW BLOCKED for {PHONE_BLOCK_TIME}s")
             return True, PHONE_BLOCK_TIME, 0
         
-        # Обновляем данные
-        supabase.table('phone_check_attempts').update({
+        # 💾 6. Обновляем запись (атомарно через upsert)
+        supabase.table('phone_check_attempts').upsert({
+            'user_id': user_ip,
             'attempt_count': count,
             'last_check': now.isoformat(),
+            'blocked_until': None,  # явный сброс
             'checked_phones': checked_phones
-        }).eq('user_id', user_ip).execute()
+        }, on_conflict='user_id').execute()
         
         return False, 0, attempts_left
         
     except Exception as e:
-        logger.error(f"check_phone_spam error: {e}")
-        # В случае ошибки разрешаем проверку (fail open)
-        return False, 0, PHONE_CHECK_LIMIT
+        logger.error(f"SPAM: check_phone_spam error for {user_ip}: {e}", exc_info=True)
+        # Fail-open: при ошибке разрешаем проверку, но с минимальными попытками
+        return False, 0, 1
 
 
 def reset_phone_spam(user_ip: str):
     """Сбрасывает счётчик после успешной регистрации"""
     try:
         now = datetime.now(timezone.utc)
-        supabase.table('phone_check_attempts').update({
+        supabase.table('phone_check_attempts').upsert({
+            'user_id': user_ip,
             'attempt_count': 0,
             'blocked_until': None,
             'last_check': now.isoformat(),
             'checked_phones': []
-        }).eq('user_id', user_ip).execute()
-        logger.info(f"User {user_ip} spam counter reset after registration")
+        }, on_conflict='user_id').execute()
+        logger.info(f"SPAM: User {user_ip} counter reset after registration")
     except Exception as e:
         logger.error(f"reset_phone_spam error: {e}")
 
