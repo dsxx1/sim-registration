@@ -54,7 +54,7 @@ def validate_full_name(name: str) -> bool:
 
 
 def parse_supabase_datetime(datetime_str: str) -> datetime:
-    """Парсит дату из Supabase. Возвращает None при ошибке."""
+    """Парсит дату из Supabase"""
     if not datetime_str:
         return None
     try:
@@ -66,118 +66,119 @@ def parse_supabase_datetime(datetime_str: str) -> datetime:
             dt = datetime.fromisoformat(datetime_str.replace(' ', 'T'))
             return dt.replace(tzinfo=timezone.utc)
     except Exception as e:
-        logger.error(f"Error parsing datetime '{datetime_str}': {e}")
-        return None
+        logger.error(f"Error parsing datetime {datetime_str}: {e}")
+        return datetime.now(timezone.utc)
 
 
 # ──────────────────────────────────────────────
-# АНТИ-СПАМ ЗАЩИТА (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+# АНТИ-СПАМ ЗАЩИТА (исправленная версия)
 # ──────────────────────────────────────────────
 
-def check_phone_spam(user_ip: str, phone: str, is_valid: bool = False) -> tuple:
+def check_phone_spam(user_ip: str, phone: str) -> tuple:
     """
-    Проверяет лимит проверок номера (6 в час).
-    is_valid: True если номер найден в БД (не увеличивает счётчик).
+    Проверяет лимит проверок номера (6 в час)
     Возвращает: (is_blocked, remaining_seconds, attempts_left)
-
-    Исправления по сравнению с предыдущей версией:
-    1. Проверка blocked_until вынесена в самое начало — до любых сбросов счётчика.
-    2. Сброс по скользящему окну идёт в elif, чтобы не затирать истёкшую блокировку.
-    3. Условие блокировки исправлено с > на >=, чтобы бан срабатывал ровно на 6-й попытке.
     """
     now = datetime.now(timezone.utc)
-
+    
     try:
+        # Получаем данные пользователя по IP
         resp = supabase.table('phone_check_attempts').select('*').eq('user_id', user_ip).execute()
-
-        # ── Новый пользователь ──────────────────────────────────────────────
+        
+        # Если пользователь новый
         if not resp.data:
-            count = 0 if is_valid else 1
-            supabase.table('phone_check_attempts').upsert({
+            supabase.table('phone_check_attempts').insert({
                 'user_id': user_ip,
+                'attempt_count': 1,
+                'last_check': now.isoformat(),
+                'blocked_until': None,
+                'checked_phones': [phone]
+            }).execute()
+            logger.info(f"New user {user_ip}: attempts=1, left={PHONE_CHECK_LIMIT - 1}")
+            return False, 0, PHONE_CHECK_LIMIT - 1
+        
+        data = resp.data[0]
+        blocked_until = parse_supabase_datetime(data.get('blocked_until'))
+        last_check = parse_supabase_datetime(data['last_check'])
+        count = data['attempt_count']
+        checked_phones = data.get('checked_phones', [])
+        
+        # Проверяем активную блокировку
+        if blocked_until and now < blocked_until:
+            remaining = int((blocked_until - now).total_seconds())
+            logger.info(f"User {user_ip} is blocked for {remaining} seconds")
+            return True, remaining, 0
+        
+        # Если блокировка истекла - сбрасываем
+        if blocked_until and now >= blocked_until:
+            count = 1
+            checked_phones = [phone]
+            supabase.table('phone_check_attempts').update({
                 'attempt_count': count,
                 'last_check': now.isoformat(),
                 'blocked_until': None,
-                'checked_phones': []
-            }, on_conflict='user_id').execute()
-
-            attempts_left = max(0, PHONE_CHECK_LIMIT - count)
-            logger.info(f"SPAM: New user {user_ip}, count={count}, left={attempts_left}")
-            return False, 0, attempts_left
-
-        data = resp.data[0]
-        blocked_until = parse_supabase_datetime(data.get('blocked_until'))
-        last_check = parse_supabase_datetime(data.get('last_check'))
-        count = data.get('attempt_count', 0)
-
-        # ── 1. Сначала всегда проверяем активную блокировку ────────────────
-        # (до любых сбросов счётчика — иначе сброс по окну снимает бан раньше времени)
-        if blocked_until and now < blocked_until:
-            remaining = int((blocked_until - now).total_seconds())
-            logger.warning(f"SPAM: User {user_ip} BLOCKED, remaining={remaining}s")
-            return True, remaining, 0
-
-        # ── 2. Блокировка истекла — сбрасываем счётчик ────────────────────
-        if blocked_until and now >= blocked_until:
+                'checked_phones': checked_phones
+            }).eq('user_id', user_ip).execute()
+            logger.info(f"User {user_ip} unblocked, reset to 1 attempt")
+            return False, 0, PHONE_CHECK_LIMIT - 1
+        
+        # Сброс по времени (прошёл час)
+        time_since_last = (now - last_check).total_seconds()
+        if time_since_last > PHONE_CHECK_WINDOW:
             count = 0
-            logger.info(f"SPAM: User {user_ip} unblocked, resetting counter")
-
-        # ── 3. Сброс по скользящему окну (только если блокировки не было) ─
-        elif last_check and (now - last_check).total_seconds() > PHONE_CHECK_WINDOW:
-            count = 0
-            logger.info(f"SPAM: User {user_ip} reset after {PHONE_CHECK_WINDOW}s window")
-
-        # ── 4. Увеличиваем счётчик ТОЛЬКО для невалидных номеров ──────────
-        if not is_valid:
-            count += 1
-            logger.info(f"SPAM: User {user_ip} invalid attempt #{count}, phone={phone}")
-        else:
-            logger.info(f"SPAM: User {user_ip} valid attempt (not counted), phone={phone}")
-
-        # ── 5. Проверяем лимит (>= вместо >, бан с 6-й попытки) ──────────
+            checked_phones = []
+            logger.info(f"User {user_ip} reset after {PHONE_CHECK_WINDOW}s")
+        
+        # Увеличиваем счётчик
+        count += 1
+        checked_phones.append(phone)
+        
+        # Ограничиваем список последних номеров (храним только последние 20)
+        if len(checked_phones) > 20:
+            checked_phones = checked_phones[-20:]
+        
+        attempts_left = PHONE_CHECK_LIMIT - count
+        
+        logger.info(f"User {user_ip}: attempts={count}, left={attempts_left}, phone={phone}")
+        
+        # Проверяем превышение лимита
         if count >= PHONE_CHECK_LIMIT:
-            new_blocked_until = now + timedelta(seconds=PHONE_BLOCK_TIME)
-            supabase.table('phone_check_attempts').upsert({
-                'user_id': user_ip,
+            blocked_until = now + timedelta(seconds=PHONE_BLOCK_TIME)
+            supabase.table('phone_check_attempts').update({
                 'attempt_count': count,
+                'blocked_until': blocked_until.isoformat(),
                 'last_check': now.isoformat(),
-                'blocked_until': new_blocked_until.isoformat(),
-                'checked_phones': []
-            }, on_conflict='user_id').execute()
-            logger.warning(f"SPAM: User {user_ip} NOW BLOCKED for {PHONE_BLOCK_TIME}s")
+                'checked_phones': checked_phones
+            }).eq('user_id', user_ip).execute()
+            logger.warning(f"User {user_ip} BLOCKED for {PHONE_BLOCK_TIME}s")
             return True, PHONE_BLOCK_TIME, 0
-
-        attempts_left = max(0, PHONE_CHECK_LIMIT - count)
-
-        # ── 6. Сохраняем обновлённое состояние ────────────────────────────
-        supabase.table('phone_check_attempts').upsert({
-            'user_id': user_ip,
+        
+        # Обновляем данные
+        supabase.table('phone_check_attempts').update({
             'attempt_count': count,
             'last_check': now.isoformat(),
-            'blocked_until': None,
-            'checked_phones': []
-        }, on_conflict='user_id').execute()
-
+            'checked_phones': checked_phones
+        }).eq('user_id', user_ip).execute()
+        
         return False, 0, attempts_left
-
+        
     except Exception as e:
-        logger.error(f"SPAM: check_phone_spam error for {user_ip}: {e}", exc_info=True)
-        # Fail-open: при ошибке разрешаем проверку, но с минимальными попытками
-        return False, 0, 1
+        logger.error(f"check_phone_spam error: {e}")
+        # В случае ошибки разрешаем проверку (fail open)
+        return False, 0, PHONE_CHECK_LIMIT
 
 
 def reset_phone_spam(user_ip: str):
     """Сбрасывает счётчик после успешной регистрации"""
     try:
         now = datetime.now(timezone.utc)
-        supabase.table('phone_check_attempts').upsert({
-            'user_id': user_ip,
+        supabase.table('phone_check_attempts').update({
             'attempt_count': 0,
             'blocked_until': None,
             'last_check': now.isoformat(),
             'checked_phones': []
-        }, on_conflict='user_id').execute()
-        logger.info(f"SPAM: User {user_ip} counter reset after registration")
+        }).eq('user_id', user_ip).execute()
+        logger.info(f"User {user_ip} spam counter reset after registration")
     except Exception as e:
         logger.error(f"reset_phone_spam error: {e}")
 
@@ -196,14 +197,14 @@ def send_telegram_notification(phone: str, organization: str, full_name: str, is
     """Отправляет уведомление в Telegram"""
     bot_token = os.getenv('BOT_TOKEN')
     chat_id = os.getenv('NOTIFICATION_CHAT_ID')
-
+    
     if not bot_token or not chat_id:
         logger.warning("Telegram notifications not configured")
         return
-
+    
     action = "перерегистрирована" if is_reregister else "зарегистрирована"
     current_time = datetime.now(timezone(timedelta(hours=5))).strftime('%d.%m.%Y %H:%M')
-
+    
     text = (
         f"📢 *SIM\\-карта {escape_markdown_v2(action)}*\n\n"
         f"👤 *Сотрудник:* {escape_markdown_v2(full_name)}\n"
@@ -211,14 +212,14 @@ def send_telegram_notification(phone: str, organization: str, full_name: str, is
         f"🏢 *Организация:* {escape_markdown_v2(organization)}\n"
         f"📅 *Дата:* {escape_markdown_v2(current_time)}"
     )
-
+    
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": text,
         "parse_mode": "MarkdownV2"
     }
-
+    
     try:
         response = httpx.post(url, json=payload, timeout=10)
         if response.status_code == 200:
@@ -237,7 +238,7 @@ def keep_supabase_alive():
     """Периодически пингует Supabase (раз в 5 минут)"""
     import threading
     import time
-
+    
     def ping():
         while True:
             try:
@@ -246,7 +247,7 @@ def keep_supabase_alive():
                 logger.info("Supabase keep-alive ping OK")
             except Exception as e:
                 logger.error(f"Supabase keep-alive failed: {e}")
-
+    
     thread = threading.Thread(target=ping, daemon=True)
     thread.start()
     logger.info("Keep-alive thread started")
@@ -277,39 +278,38 @@ def check_phone_api():
     data = request.json or {}
     phone = data.get('phone', '').strip()
     user_ip = request.remote_addr
-
+    
     if not phone:
         return jsonify({'error': 'Phone number required'}), 400
-
+    
     if not validate_phone(phone):
         return jsonify({'error': 'Неверный формат. Нужно 10 цифр, начиная с 9'}), 400
-
+    
+    # Проверка спама
+    is_blocked, remaining, attempts_left = check_phone_spam(user_ip, phone)
+    
+    if is_blocked:
+        minutes = remaining // 60
+        seconds = remaining % 60
+        return jsonify({
+            'blocked': True,
+            'message': f'Превышен лимит проверок. Попробуйте через {minutes} мин {seconds} сек',
+            'remaining_seconds': remaining
+        }), 403
+    
     try:
         # Проверка в таблице разрешённых номеров
         valid_check = supabase.table('valid_numbers').select('*').eq('phone', phone).execute()
-        is_valid = bool(valid_check.data)
-
-        # Проверка спама (передаём флаг is_valid)
-        is_blocked, remaining, attempts_left = check_phone_spam(user_ip, phone, is_valid)
-
-        if is_blocked:
-            minutes = remaining // 60
-            seconds = remaining % 60
-            return jsonify({
-                'blocked': True,
-                'message': f'Превышен лимит проверок. Попробуйте через {minutes} мин {seconds} сек',
-                'remaining_seconds': remaining
-            }), 403
-
-        if not is_valid:
+        
+        if not valid_check.data:
             return jsonify({
                 'valid': False,
                 'message': f'❌ Номер не найден в базе разрешенных номеров.\nОсталось попыток: {attempts_left}'
             }), 404
-
+        
         # Проверка существующей регистрации
         existing = supabase.table('sim_registrations').select('*').eq('phone', phone).eq('is_active', True).execute()
-
+        
         if existing.data:
             reg = existing.data[0]
             return jsonify({
@@ -320,14 +320,14 @@ def check_phone_api():
                 'created_at': reg['created_at'][:10],
                 'attempts_left': attempts_left
             })
-
+        
         return jsonify({
             'valid': True,
             'phone': phone,
             'attempts_left': attempts_left,
             'message': f'✅ Номер подтверждён. Осталось попыток: {attempts_left}'
         })
-
+        
     except Exception as e:
         logger.error(f"check_phone_api error: {e}")
         return jsonify({'error': 'Ошибка сервера'}), 500
@@ -341,26 +341,26 @@ def register_sim():
     organization = data.get('organization', '').strip()
     full_name = data.get('full_name', '').strip()
     user_ip = request.remote_addr
-
+    
     if not all([phone, organization, full_name]):
         return jsonify({'error': 'Все поля обязательны'}), 400
-
+    
     if not validate_phone(phone):
         return jsonify({'error': 'Неверный формат номера'}), 400
-
+    
     if not validate_full_name(full_name):
         return jsonify({'error': 'Некорректное ФИО. Формат: Иванов Иван Иванович'}), 400
-
+    
     try:
         # Проверяем существующую активную запись
         existing = supabase.table('sim_registrations').select('*').eq('phone', phone).eq('is_active', True).execute()
         is_reregister = bool(existing.data)
-
+        
         # Деактивируем старую запись
         if existing.data:
             supabase.table('sim_registrations').update({'is_active': False}).eq('phone', phone).execute()
             logger.info(f"Deactivated old registration for {phone}")
-
+        
         # Создаём новую запись
         created_at = datetime.now(timezone(timedelta(hours=5))).isoformat()
         new_reg = {
@@ -372,51 +372,25 @@ def register_sim():
             'is_active': True,
             'created_at': created_at
         }
-
+        
         supabase.table('sim_registrations').insert(new_reg).execute()
         logger.info(f"New registration saved: {phone} - {full_name}")
-
+        
         # Сбрасываем спам-счётчик
         reset_phone_spam(user_ip)
-
+        
         # Отправляем уведомление в Telegram
         send_telegram_notification(phone, organization, full_name, is_reregister)
-
+        
         prefix = "пере" if is_reregister else ""
         return jsonify({
             'success': True,
             'message': f'✅ SIM-карта успешно {prefix}зарегистрирована!\n📱 {phone}\n🏢 {organization}\n👤 {full_name}'
         })
-
+        
     except Exception as e:
         logger.error(f"register_sim error: {e}")
         return jsonify({'error': 'Ошибка при сохранении данных'}), 500
-
-
-@app.route('/api/reset-attempts', methods=['POST'])
-def reset_attempts():
-    """Ручной сброс счётчика (только для отладки)"""
-    admin_key = request.headers.get('X-Admin-Key')
-    if admin_key != os.getenv('ADMIN_KEY', 'debug-key'):
-        return jsonify({'error': 'Unauthorized'}), 403
-
-    user_ip = request.json.get('user_ip')
-    if not user_ip:
-        return jsonify({'error': 'user_ip required'}), 400
-
-    try:
-        now = datetime.now(timezone.utc)
-        supabase.table('phone_check_attempts').upsert({
-            'user_id': user_ip,
-            'attempt_count': 0,
-            'blocked_until': None,
-            'last_check': now.isoformat(),
-            'checked_phones': []
-        }, on_conflict='user_id').execute()
-
-        return jsonify({'success': True, 'message': f'Reset for {user_ip}'})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/')
