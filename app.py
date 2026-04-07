@@ -71,12 +71,13 @@ def parse_supabase_datetime(datetime_str: str) -> datetime:
 
 
 # ──────────────────────────────────────────────
-# АНТИ-СПАМ ЗАЩИТА (исправленная версия)
+# АНТИ-СПАМ ЗАЩИТА (ИСПРАВЛЕННАЯ ВЕРСИЯ)
 # ──────────────────────────────────────────────
 
-def check_phone_spam(user_ip: str, phone: str) -> tuple:
+def check_phone_spam(user_ip: str, phone: str, is_valid: bool = False) -> tuple:
     """
     Проверяет лимит проверок номера (6 в час)
+    is_valid: True если номер найден в БД (не увеличивает счётчик)
     Возвращает: (is_blocked, remaining_seconds, attempts_left)
     """
     now = datetime.now(timezone.utc)
@@ -85,61 +86,63 @@ def check_phone_spam(user_ip: str, phone: str) -> tuple:
         # Получаем данные пользователя по IP
         resp = supabase.table('phone_check_attempts').select('*').eq('user_id', user_ip).execute()
         
-
-        if not resp.data:  
+        # Новый пользователь
+        if not resp.data:
+            # Если номер валидный - не увеличиваем счётчик
+            count = 0 if is_valid else 1
             supabase.table('phone_check_attempts').upsert({
                 'user_id': user_ip,
-                'attempt_count': 1,
+                'attempt_count': count,
                 'last_check': now.isoformat(),
                 'blocked_until': None,
-                'checked_phones': [phone]
+                'checked_phones': [phone] if not is_valid else []
             }, on_conflict='user_id').execute()
-            logger.info(f"SPAM: New user {user_ip}, count=1, left={PHONE_CHECK_LIMIT - 1}")
-            return False, 0, PHONE_CHECK_LIMIT - 1
+            
+            attempts_left = PHONE_CHECK_LIMIT - count
+            logger.info(f"SPAM: New user {user_ip}, count={count}, left={attempts_left}")
+            return False, 0, attempts_left
         
         data = resp.data[0]
         
-        # Безопасный парсинг дат
-        blocked_until_raw = data.get('blocked_until')
-        blocked_until = parse_supabase_datetime(blocked_until_raw) if blocked_until_raw else None
+        # Парсим даты
+        blocked_until = None
+        if data.get('blocked_until'):
+            blocked_until = parse_supabase_datetime(data['blocked_until'])
         
-        last_check_raw = data.get('last_check')
-        last_check = parse_supabase_datetime(last_check_raw) if last_check_raw else None
+        last_check = None
+        if data.get('last_check'):
+            last_check = parse_supabase_datetime(data['last_check'])
         
         count = data.get('attempt_count', 0)
-        checked_phones = data.get('checked_phones', []) or []
         
-        # 🔒 1. Проверяем активную блокировку
+        # Проверяем активную блокировку
         if blocked_until and now < blocked_until:
             remaining = int((blocked_until - now).total_seconds())
             logger.warning(f"SPAM: User {user_ip} BLOCKED, remaining={remaining}s")
             return True, remaining, 0
         
-        # 🔄 2. Если блокировка истекла — полный сброс
+        # Если блокировка истекла - сбрасываем
         if blocked_until and now >= blocked_until:
             count = 0
-            checked_phones = []
             logger.info(f"SPAM: User {user_ip} unblocked, resetting counter")
         
-        # 🕐 3. Сброс по времени (скользящее окно)
+        # Сброс по времени (скользящее окно)
         if last_check:
             time_since_last = (now - last_check).total_seconds()
             if time_since_last > PHONE_CHECK_WINDOW:
                 count = 0
-                checked_phones = []
                 logger.info(f"SPAM: User {user_ip} reset after {PHONE_CHECK_WINDOW}s window")
         
-        # ➕ 4. Увеличиваем счётчик
-        count += 1
-        checked_phones.append(phone)
-        if len(checked_phones) > 20:
-            checked_phones = checked_phones[-20:]
+        # Увеличиваем счётчик ТОЛЬКО для НЕвалидных номеров
+        if not is_valid:
+            count += 1
+            logger.info(f"SPAM: User {user_ip} invalid attempt #{count}, phone={phone}")
+        else:
+            logger.info(f"SPAM: User {user_ip} valid attempt (not counted), phone={phone}")
         
         attempts_left = max(0, PHONE_CHECK_LIMIT - count)
         
-        logger.info(f"SPAM: User {user_ip}, count={count}, left={attempts_left}, phone={phone}")
-        
-        # 🚫 5. Превышен лимит — блокируем
+        # Превышен лимит - блокируем
         if count > PHONE_CHECK_LIMIT:
             blocked_until = now + timedelta(seconds=PHONE_BLOCK_TIME)
             supabase.table('phone_check_attempts').upsert({
@@ -147,18 +150,18 @@ def check_phone_spam(user_ip: str, phone: str) -> tuple:
                 'attempt_count': count,
                 'last_check': now.isoformat(),
                 'blocked_until': blocked_until.isoformat(),
-                'checked_phones': checked_phones
+                'checked_phones': []
             }, on_conflict='user_id').execute()
             logger.warning(f"SPAM: User {user_ip} NOW BLOCKED for {PHONE_BLOCK_TIME}s")
             return True, PHONE_BLOCK_TIME, 0
         
-        # 💾 6. Обновляем запись (атомарно через upsert)
+        # Обновляем запись
         supabase.table('phone_check_attempts').upsert({
             'user_id': user_ip,
             'attempt_count': count,
             'last_check': now.isoformat(),
-            'blocked_until': None,  # явный сброс
-            'checked_phones': checked_phones
+            'blocked_until': None,
+            'checked_phones': []
         }, on_conflict='user_id').execute()
         
         return False, 0, attempts_left
@@ -287,23 +290,24 @@ def check_phone_api():
     if not validate_phone(phone):
         return jsonify({'error': 'Неверный формат. Нужно 10 цифр, начиная с 9'}), 400
     
-    # Проверка спама
-    is_blocked, remaining, attempts_left = check_phone_spam(user_ip, phone)
-    
-    if is_blocked:
-        minutes = remaining // 60
-        seconds = remaining % 60
-        return jsonify({
-            'blocked': True,
-            'message': f'Превышен лимит проверок. Попробуйте через {minutes} мин {seconds} сек',
-            'remaining_seconds': remaining
-        }), 403
-    
     try:
         # Проверка в таблице разрешённых номеров
         valid_check = supabase.table('valid_numbers').select('*').eq('phone', phone).execute()
+        is_valid = bool(valid_check.data)
         
-        if not valid_check.data:
+        # Проверка спама (передаём флаг is_valid)
+        is_blocked, remaining, attempts_left = check_phone_spam(user_ip, phone, is_valid)
+        
+        if is_blocked:
+            minutes = remaining // 60
+            seconds = remaining % 60
+            return jsonify({
+                'blocked': True,
+                'message': f'Превышен лимит проверок. Попробуйте через {minutes} мин {seconds} сек',
+                'remaining_seconds': remaining
+            }), 403
+        
+        if not is_valid:
             return jsonify({
                 'valid': False,
                 'message': f'❌ Номер не найден в базе разрешенных номеров.\nОсталось попыток: {attempts_left}'
@@ -393,6 +397,32 @@ def register_sim():
     except Exception as e:
         logger.error(f"register_sim error: {e}")
         return jsonify({'error': 'Ошибка при сохранении данных'}), 500
+
+
+@app.route('/api/reset-attempts', methods=['POST'])
+def reset_attempts():
+    """Ручной сброс счётчика (только для отладки)"""
+    admin_key = request.headers.get('X-Admin-Key')
+    if admin_key != os.getenv('ADMIN_KEY', 'debug-key'):
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    user_ip = request.json.get('user_ip')
+    if not user_ip:
+        return jsonify({'error': 'user_ip required'}), 400
+    
+    try:
+        now = datetime.now(timezone.utc)
+        supabase.table('phone_check_attempts').upsert({
+            'user_id': user_ip,
+            'attempt_count': 0,
+            'blocked_until': None,
+            'last_check': now.isoformat(),
+            'checked_phones': []
+        }, on_conflict='user_id').execute()
+        
+        return jsonify({'success': True, 'message': f'Reset for {user_ip}'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/')
