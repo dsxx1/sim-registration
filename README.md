@@ -1,4 +1,3 @@
-```markdown
 # SIM-карт Регистрация
 
 Веб-приложение для регистрации SIM-карт сотрудников с интеграцией Supabase и Telegram уведомлениями.
@@ -6,7 +5,8 @@
 ## 🚀 Функционал
 
 - Проверка номера телефона по базе разрешённых номеров
-- Антиспам защита: 6 проверок в час, блокировка на 1 час
+- Антиспам защита: 6 **разных** номеров в час с одного IP, блокировка на 1 час
+  (повтор того же номера попытку не расходует)
 - Поэтапное заполнение: номер → организация → ФИО
 - Автоматические уведомления в Telegram при регистрации
 - Перерегистрация существующих номеров
@@ -88,7 +88,9 @@ sim-registration/
 ## 🔄 Логика работы
 
 1. **Проверка номера**: пользователь вводит номер → проверка в таблице `valid_numbers`
-2. **Антиспам**: при каждом запросе увеличивается счётчик (6 попыток в час)
+2. **Антиспам**: считаются РАЗНЫЕ номера с одного IP (до 6 в час). Повторная
+   проверка того же номера попытку не тратит. IP определяется из заголовка
+   `X-Forwarded-For` (за прокси Railway), а не из `request.remote_addr`
 3. **Выбор организации**: из таблицы `organizations`
 4. **Ввод ФИО**: валидация (3 слова, только буквы)
 5. **Сохранение**: запись в `sim_registrations`, старая запись деактивируется
@@ -174,6 +176,38 @@ CREATE TABLE IF NOT EXISTS phone_check_attempts (
 CREATE INDEX IF NOT EXISTS idx_sim_registrations_phone ON sim_registrations(phone);
 CREATE INDEX IF NOT EXISTS idx_sim_registrations_active ON sim_registrations(is_active);
 CREATE INDEX IF NOT EXISTS idx_phone_check_attempts_user_id ON phone_check_attempts(user_id);
+```
+
+### 🔒 Рекомендуемое усиление (чтобы счётчик не «прыгал»)
+
+`user_id` (IP) должен быть **уникальным** — иначе при гонках могут появиться
+дубли строк, и остаток попыток будет показываться непредсказуемо. Выполни один раз:
+
+```sql
+-- 1) Схлопнуть возможные дубли, оставив самую свежую запись по каждому IP
+DELETE FROM phone_check_attempts a
+USING phone_check_attempts b
+WHERE a.user_id = b.user_id
+  AND a.last_check < b.last_check;
+
+-- 2) Запретить дубли на будущее
+ALTER TABLE phone_check_attempts
+  ADD CONSTRAINT uq_phone_check_user UNIQUE (user_id);
+```
+
+> ⚠️ За обратным прокси (Railway/Heroku) `request.remote_addr` возвращает IP
+> прокси, который меняется от запроса к запросу — именно из-за этого счётчик
+> вёл себя случайно. Приложение теперь берёт реальный IP из `X-Forwarded-For`.
+
+## 🧪 Тесты
+
+Логика анти-спама покрыта тестами (Supabase подменяется in-memory заглушкой,
+реальная БД не нужна):
+
+```bash
+python tests/test_spam.py        # без зависимостей от pytest
+# или
+pytest tests/ -q
 ```
 
 ## 📱 Telegram бот

@@ -21,10 +21,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Supabase
-supabase = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_KEY")
-)
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+if not SUPABASE_URL or not SUPABASE_KEY:
+    logger.error("SUPABASE_URL / SUPABASE_KEY не заданы — проверь переменные окружения (.env)")
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Анти-спам константы
 PHONE_CHECK_LIMIT = 6
@@ -74,94 +75,108 @@ def parse_supabase_datetime(datetime_str: str) -> datetime:
 # АНТИ-СПАМ ЗАЩИТА (исправленная версия)
 # ──────────────────────────────────────────────
 
+def get_client_ip() -> str:
+    """Реальный IP клиента за обратным прокси (Railway / Heroku / Nginx).
+
+    За прокси request.remote_addr возвращает IP самого прокси и может меняться
+    от запроса к запросу — поэтому счётчик попыток «прыгал». Берём первый адрес
+    из X-Forwarded-For (исходный клиент), с откатом на X-Real-IP / remote_addr.
+    """
+    xff = request.headers.get('X-Forwarded-For', '')
+    if xff:
+        ip = xff.split(',')[0].strip()
+        if ip:
+            return ip
+    return request.headers.get('X-Real-IP') or request.remote_addr or 'unknown'
+
+
 def check_phone_spam(user_ip: str, phone: str) -> tuple:
     """
-    Проверяет лимит проверок номера (6 в час)
+    Лимит проверок: до PHONE_CHECK_LIMIT РАЗНЫХ номеров в час с одного IP.
+    Повторная проверка того же номера попытку НЕ расходует.
     Возвращает: (is_blocked, remaining_seconds, attempts_left)
     """
     now = datetime.now(timezone.utc)
-    
+
     try:
-        # Получаем данные пользователя по IP
-        resp = supabase.table('phone_check_attempts').select('*').eq('user_id', user_ip).execute()
-        
-        # Если пользователь новый
+        # Детерминированно берём самую свежую запись пользователя по IP.
+        # order(last_check) защищает от «рандома» при случайных дублях строк.
+        resp = (supabase.table('phone_check_attempts')
+                .select('*')
+                .eq('user_id', user_ip)
+                .order('last_check', desc=True)
+                .execute())
+
+        # Новый пользователь — первая проверка
         if not resp.data:
-            supabase.table('phone_check_attempts').insert({
-                'user_id': user_ip,
-                'attempt_count': 1,
-                'last_check': now.isoformat(),
-                'blocked_until': None,
-                'checked_phones': [phone]
-            }).execute()
-            logger.info(f"New user {user_ip}: attempts=1, left={PHONE_CHECK_LIMIT - 1}")
+            try:
+                supabase.table('phone_check_attempts').insert({
+                    'user_id': user_ip,
+                    'attempt_count': 1,
+                    'last_check': now.isoformat(),
+                    'blocked_until': None,
+                    'checked_phones': [phone]
+                }).execute()
+            except Exception as e:
+                # Возможна гонка: строку уже создал параллельный запрос — не критично
+                logger.warning(f"insert race for {user_ip}: {e}")
+            logger.info(f"New user {user_ip}: distinct=1, left={PHONE_CHECK_LIMIT - 1}")
             return False, 0, PHONE_CHECK_LIMIT - 1
-        
+
         data = resp.data[0]
         blocked_until = parse_supabase_datetime(data.get('blocked_until'))
         last_check = parse_supabase_datetime(data['last_check'])
-        count = data['attempt_count']
-        checked_phones = data.get('checked_phones', [])
-        
-        # Проверяем активную блокировку
+        checked_phones = data.get('checked_phones') or []
+
+        # Активная блокировка
         if blocked_until and now < blocked_until:
             remaining = int((blocked_until - now).total_seconds())
-            logger.info(f"User {user_ip} is blocked for {remaining} seconds")
+            logger.info(f"User {user_ip} blocked for {remaining}s")
             return True, remaining, 0
-        
-        # Если блокировка истекла - сбрасываем
-        if blocked_until and now >= blocked_until:
-            count = 1
-            checked_phones = [phone]
-            supabase.table('phone_check_attempts').update({
-                'attempt_count': count,
-                'last_check': now.isoformat(),
-                'blocked_until': None,
-                'checked_phones': checked_phones
-            }).eq('user_id', user_ip).execute()
-            logger.info(f"User {user_ip} unblocked, reset to 1 attempt")
-            return False, 0, PHONE_CHECK_LIMIT - 1
-        
-        # Сброс по времени (прошёл час)
-        time_since_last = (now - last_check).total_seconds()
-        if time_since_last > PHONE_CHECK_WINDOW:
-            count = 0
+
+        # Окно сброшено: блокировка истекла ИЛИ прошёл час с последней проверки
+        window_expired = (
+            (blocked_until is not None and now >= blocked_until) or
+            (now - last_check).total_seconds() > PHONE_CHECK_WINDOW
+        )
+        if window_expired:
             checked_phones = []
-            logger.info(f"User {user_ip} reset after {PHONE_CHECK_WINDOW}s")
-        
-        # Увеличиваем счётчик
-        count += 1
-        checked_phones.append(phone)
-        
-        # Ограничиваем список последних номеров (храним только последние 20)
-        if len(checked_phones) > 20:
-            checked_phones = checked_phones[-20:]
-        
-        attempts_left = PHONE_CHECK_LIMIT - count
-        
-        logger.info(f"User {user_ip}: attempts={count}, left={attempts_left}, phone={phone}")
-        
-        # Проверяем превышение лимита
-        if count >= PHONE_CHECK_LIMIT:
-            blocked_until = now + timedelta(seconds=PHONE_BLOCK_TIME)
+            logger.info(f"User {user_ip} window reset")
+
+        # Считаем РАЗНЫЕ номера: повтор того же номера попытку не тратит
+        already_checked = phone in checked_phones
+        if not already_checked:
+            checked_phones.append(phone)
+
+        count = len(checked_phones)
+        attempts_left = max(0, PHONE_CHECK_LIMIT - count)
+        logger.info(
+            f"User {user_ip}: distinct={count}, left={attempts_left}, "
+            f"phone={phone}, repeat={already_checked}"
+        )
+
+        # Превышен лимит разных номеров — блокируем
+        if count > PHONE_CHECK_LIMIT:
+            blocked_at = now + timedelta(seconds=PHONE_BLOCK_TIME)
             supabase.table('phone_check_attempts').update({
                 'attempt_count': count,
-                'blocked_until': blocked_until.isoformat(),
+                'blocked_until': blocked_at.isoformat(),
                 'last_check': now.isoformat(),
-                'checked_phones': checked_phones
+                'checked_phones': checked_phones[-PHONE_CHECK_LIMIT:]
             }).eq('user_id', user_ip).execute()
             logger.warning(f"User {user_ip} BLOCKED for {PHONE_BLOCK_TIME}s")
             return True, PHONE_BLOCK_TIME, 0
-        
-        # Обновляем данные
+
+        # Обновляем счётчик (update по user_id затрагивает все дубли — они сходятся)
         supabase.table('phone_check_attempts').update({
             'attempt_count': count,
             'last_check': now.isoformat(),
+            'blocked_until': None,
             'checked_phones': checked_phones
         }).eq('user_id', user_ip).execute()
-        
+
         return False, 0, attempts_left
-        
+
     except Exception as e:
         logger.error(f"check_phone_spam error: {e}")
         # В случае ошибки разрешаем проверку (fail open)
@@ -277,8 +292,8 @@ def check_phone_api():
     """Проверка номера телефона"""
     data = request.json or {}
     phone = data.get('phone', '').strip()
-    user_ip = request.remote_addr
-    
+    user_ip = get_client_ip()
+
     if not phone:
         return jsonify({'error': 'Phone number required'}), 400
     
@@ -340,8 +355,8 @@ def register_sim():
     phone = data.get('phone', '').strip()
     organization = data.get('organization', '').strip()
     full_name = data.get('full_name', '').strip()
-    user_ip = request.remote_addr
-    
+    user_ip = get_client_ip()
+
     if not all([phone, organization, full_name]):
         return jsonify({'error': 'Все поля обязательны'}), 400
     
