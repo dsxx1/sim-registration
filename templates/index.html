@@ -134,7 +134,7 @@
             border-radius: 10px;
             color: var(--text);
             font-family: var(--font-mono);
-            font-size: 15px;
+            font-size: 16px; /* 16px — чтобы iOS не зумил при фокусе */
             padding: 12px 14px;
             outline: none;
             transition: border-color 0.2s, box-shadow 0.2s;
@@ -189,6 +189,43 @@
             font-family: var(--font-mono);
             color: var(--accent);
         }
+        /* Мало попыток осталось — подсвечиваем жёлтым */
+        .attempts-badge.low {
+            background: rgba(245,158,11,0.15);
+            border-color: rgba(245,158,11,0.4);
+            color: var(--yellow);
+        }
+
+        /* Индикатор шагов: Номер → Организация → ФИО */
+        .steps {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 24px;
+        }
+        .step {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            transition: color 0.3s;
+        }
+        .step-bar {
+            height: 3px;
+            border-radius: 2px;
+            background: var(--border);
+            transition: background 0.3s;
+        }
+        .step.active { color: var(--text); }
+        .step.active .step-bar {
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+        }
+        .step.done { color: var(--green); }
+        .step.done .step-bar { background: var(--green); }
 
         .btn {
             width: 100%;
@@ -305,30 +342,36 @@
     </div>
 
     <div class="card-body">
+        <div class="steps" id="steps">
+            <div class="step active" data-step="1"><div class="step-bar"></div>1 · Номер</div>
+            <div class="step" data-step="2"><div class="step-bar"></div>2 · Организация</div>
+            <div class="step" data-step="3"><div class="step-bar"></div>3 · ФИО</div>
+        </div>
+
         <div id="rereg-box"></div>
 
         <div class="field">
-            <label>📱 Номер телефона</label>
+            <label for="phone">📱 Номер телефона</label>
             <div class="input-wrap">
                 <span class="prefix">+7</span>
-                <input type="tel" id="phone" class="has-prefix"
+                <input type="tel" id="phone" class="has-prefix" inputmode="numeric"
                        placeholder="9XXXXXXXXX" maxlength="10" autocomplete="off">
             </div>
-            <div id="phone-status" class="phone-status"></div>
+            <div id="phone-status" class="phone-status" aria-live="polite"></div>
         </div>
 
         <div class="field" id="org-field" style="display: none;">
-            <label>🏢 Организация</label>
+            <label for="organization">🏢 Организация</label>
             <select id="organization">
                 <option value="">— Загрузка... —</option>
             </select>
         </div>
 
         <div class="field" id="name-field" style="display: none;">
-            <label>👤 ФИО полностью</label>
+            <label for="fullName">👤 ФИО полностью</label>
             <input type="text" id="fullName"
                    placeholder="Иванов Иван Иванович" maxlength="50">
-            <div id="name-status" class="phone-status" style="margin-top: 6px;"></div>
+            <div id="name-status" class="phone-status" style="margin-top: 6px;" aria-live="polite"></div>
         </div>
 
         <button class="btn" id="submitBtn" style="display: none;" disabled>Зарегистрировать SIM-карту</button>
@@ -343,6 +386,10 @@
             <span>→</span>
             <span>ФИО: фамилия, имя, отчество полностью</span>
         </div>
+        <div class="info-row">
+            <span>→</span>
+            <span>Лимит: 6 разных номеров в час с одного устройства</span>
+        </div>
     </div>
 </div>
 
@@ -352,6 +399,21 @@
     let isPhoneValid = false;
     let isOrgSelected = false;
     let checkTimeout = null;
+
+    // Подсветка текущего шага: 1 — номер, 2 — организация, 3 — ФИО
+    function setStep(n) {
+        document.querySelectorAll('#steps .step').forEach(el => {
+            const s = +el.dataset.step;
+            el.classList.toggle('active', s === n);
+            el.classList.toggle('done', s < n);
+        });
+    }
+
+    // Бейдж остатка попыток (жёлтый, когда мало)
+    function attemptsBadge(left) {
+        const low = left <= 1 ? ' low' : '';
+        return `<span class="attempts-badge${low}">попыток: ${left}</span>`;
+    }
 
     async function loadOrganizations() {
         try {
@@ -394,6 +456,7 @@
         document.getElementById('name-field').style.display = 'none';
         document.getElementById('submitBtn').style.display = 'none';
         this.classList.remove('valid', 'invalid');
+        setStep(1);
         updateBtn();
 
         if (phone.length === 10 && phone.startsWith('9')) {
@@ -426,13 +489,13 @@
                     `👤 ${d.full_name}\n🏢 ${d.organization}\n📅 ${d.created_at}\n\n` +
                     `При сохранении будет выполнена перерегистрация.`;
                 rereg.style.display = 'block';
-                status.innerHTML = `<span class="attempts-badge">попыток: ${d.attempts_left}</span> Будет перерегистрация`;
+                status.innerHTML = `${attemptsBadge(d.attempts_left)} Будет перерегистрация`;
                 status.className = 'phone-status warn';
                 input.classList.add('valid');
                 isPhoneValid = true;
                 showOrgField();
             } else if (d.valid) {
-                status.innerHTML = `<span class="attempts-badge">попыток: ${d.attempts_left}</span> Номер подтверждён`;
+                status.innerHTML = `${attemptsBadge(d.attempts_left)} Номер подтверждён`;
                 status.className = 'phone-status ok';
                 input.classList.add('valid');
                 isPhoneValid = true;
@@ -452,6 +515,7 @@
     }
 
     function showOrgField() {
+        setStep(2);
         document.getElementById('org-field').style.display = 'block';
         if (!document.getElementById('organization').hasChildNodes() || 
             document.getElementById('organization').children.length <= 1) {
@@ -463,11 +527,13 @@
         const org = this.value;
         if (org && org !== '— Загрузка... —' && org !== '— Выберите организацию —') {
             isOrgSelected = true;
+            setStep(3);
             document.getElementById('name-field').style.display = 'block';
             document.getElementById('submitBtn').style.display = 'block';
             document.getElementById('fullName').focus();
         } else {
             isOrgSelected = false;
+            setStep(2);
             document.getElementById('name-field').style.display = 'none';
             document.getElementById('submitBtn').style.display = 'none';
         }
@@ -541,6 +607,7 @@
                 document.getElementById('submitBtn').style.display = 'none';
                 isPhoneValid = false;
                 isOrgSelected = false;
+                setStep(1);
             } else {
                 showToast(d.error || 'Ошибка регистрации', 'error');
             }
