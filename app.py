@@ -28,7 +28,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Анти-спам константы
-PHONE_CHECK_LIMIT = 6
+PHONE_CHECK_LIMIT = 5       # макс. РАЗНЫХ номеров для проверки за час (показ 5→1)
 PHONE_CHECK_WINDOW = 3600  # 1 час
 PHONE_BLOCK_TIME = 3600     # 1 час блокировки
 
@@ -43,15 +43,20 @@ def validate_phone(phone: str) -> bool:
     return phone.isdigit() and len(phone) == 10 and phone.startswith('9')
 
 
+# Слово ФИО: только буквы (кириллица/латиница), допускается дефис внутри
+_NAME_WORD_RE = re.compile(r'^[а-яА-ЯёЁa-zA-Z]+(?:-[а-яА-ЯёЁa-zA-Z]+)*$')
+
+
 def validate_full_name(name: str) -> bool:
-    """Проверка ФИО: от 5 до 50 символов, 2-3 слова, только буквы и дефис"""
-    name = name.strip()
+    """Проверка ФИО: ровно 3 слова (Фамилия Имя Отчество), каждое — минимум
+    2 буквы, без сокращений и инициалов. Общая длина 5–50 символов."""
+    name = ' '.join(name.split())  # схлопываем повторные пробелы
     if not (5 <= len(name) <= 50):
         return False
-    words = name.split()
-    if not (2 <= len(words) <= 3):
+    words = name.split(' ')
+    if len(words) != 3:
         return False
-    return re.match(r'^[а-яА-ЯёЁa-zA-Z\s\-]+$', name) is not None
+    return all(len(w) >= 2 and _NAME_WORD_RE.match(w) for w in words)
 
 
 def parse_supabase_datetime(datetime_str: str) -> datetime:
@@ -120,8 +125,8 @@ def check_phone_spam(user_ip: str, phone: str) -> tuple:
             except Exception as e:
                 # Возможна гонка: строку уже создал параллельный запрос — не критично
                 logger.warning(f"insert race for {user_ip}: {e}")
-            logger.info(f"New user {user_ip}: distinct=1, left={PHONE_CHECK_LIMIT - 1}")
-            return False, 0, PHONE_CHECK_LIMIT - 1
+            logger.info(f"New user {user_ip}: distinct=1, left={PHONE_CHECK_LIMIT}")
+            return False, 0, PHONE_CHECK_LIMIT
 
         data = resp.data[0]
         blocked_until = parse_supabase_datetime(data.get('blocked_until'))
@@ -149,7 +154,9 @@ def check_phone_spam(user_ip: str, phone: str) -> tuple:
             checked_phones.append(phone)
 
         count = len(checked_phones)
-        attempts_left = max(0, PHONE_CHECK_LIMIT - count)
+        # Показываем 5,4,3,2,1 (1-я проверка = 5, 5-я = 1). Ноль не показываем:
+        # при count > LIMIT срабатывает блокировка ниже.
+        attempts_left = PHONE_CHECK_LIMIT - count + 1
         logger.info(
             f"User {user_ip}: distinct={count}, left={attempts_left}, "
             f"phone={phone}, repeat={already_checked}"
@@ -364,7 +371,7 @@ def register_sim():
         return jsonify({'error': 'Неверный формат номера'}), 400
     
     if not validate_full_name(full_name):
-        return jsonify({'error': 'Некорректное ФИО. Формат: Иванов Иван Иванович'}), 400
+        return jsonify({'error': 'Некорректное ФИО. Нужны 3 слова без сокращений: Иванов Иван Иванович'}), 400
     
     try:
         # Проверяем существующую активную запись

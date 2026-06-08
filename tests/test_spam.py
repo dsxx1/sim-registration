@@ -96,7 +96,7 @@ def setup_function(_=None):
 
 # ── Тесты ────────────────────────────────────────────────────────
 def test_distinct_numbers_decrement_monotonically():
-    """Разные номера уменьшают остаток строго по порядку (без рандома)."""
+    """Разные номера уменьшают остаток строго: 5,4,3,2,1 — без рандома и без 0."""
     setup_function()
     ip = "203.0.113.10"
     lefts = []
@@ -104,23 +104,24 @@ def test_distinct_numbers_decrement_monotonically():
         blocked, _, left = app.check_phone_spam(ip, f"90000000{i:02d}")
         assert not blocked
         lefts.append(left)
-    expected = list(range(app.PHONE_CHECK_LIMIT - 1, -1, -1))  # 5,4,3,2,1,0
+    expected = list(range(app.PHONE_CHECK_LIMIT, 0, -1))  # 5,4,3,2,1
     assert lefts == expected, f"{lefts} != {expected}"
+    assert 0 not in lefts  # ноль пользователю не показываем
 
 
 def test_repeat_same_number_does_not_consume_attempt():
     """Повтор того же номера не тратит попытку — остаток стабилен."""
     setup_function()
     ip = "203.0.113.11"
-    assert app.check_phone_spam(ip, "9001112233")[2] == app.PHONE_CHECK_LIMIT - 1
-    assert app.check_phone_spam(ip, "9001112233")[2] == app.PHONE_CHECK_LIMIT - 1
-    assert app.check_phone_spam(ip, "9001112233")[2] == app.PHONE_CHECK_LIMIT - 1
+    assert app.check_phone_spam(ip, "9001112233")[2] == app.PHONE_CHECK_LIMIT
+    assert app.check_phone_spam(ip, "9001112233")[2] == app.PHONE_CHECK_LIMIT
+    assert app.check_phone_spam(ip, "9001112233")[2] == app.PHONE_CHECK_LIMIT
     # новый номер — минус одна попытка
-    assert app.check_phone_spam(ip, "9009998877")[2] == app.PHONE_CHECK_LIMIT - 2
+    assert app.check_phone_spam(ip, "9009998877")[2] == app.PHONE_CHECK_LIMIT - 1
 
 
 def test_block_after_limit_exceeded():
-    """После лимита разных номеров — блокировка."""
+    """5 разных номеров проходят (5..1), 6-й — блокировка."""
     setup_function()
     ip = "203.0.113.12"
     for i in range(app.PHONE_CHECK_LIMIT):
@@ -140,7 +141,7 @@ def test_window_reset_restores_attempts():
     old = datetime.now(timezone.utc) - timedelta(hours=2)
     app.supabase.tables["phone_check_attempts"][ip]["last_check"] = old.isoformat()
     _, _, left = app.check_phone_spam(ip, "9000000003")
-    assert left == app.PHONE_CHECK_LIMIT - 1
+    assert left == app.PHONE_CHECK_LIMIT
 
 
 def test_same_ip_always_same_row():
@@ -152,6 +153,32 @@ def test_same_ip_always_same_row():
     rows = app.supabase.tables["phone_check_attempts"]
     assert list(rows.keys()) == [ip]
     assert rows[ip]["attempt_count"] == 3
+
+
+def test_full_name_rejects_single_letter_words():
+    """ФИО из одной буквы / инициалов и неверного числа слов — отклоняются."""
+    bad = [
+        "Абдуллин Венер н",       # отчество в 1 букву (случай со скриншота)
+        "Иванов И Иванович",      # инициал
+        "Иванов Иван",            # 2 слова
+        "Иванов Иван Иванович Петрович",  # 4 слова
+        "Ив4нов Иван Иванович",   # цифра
+        "А Б В",                  # все по 1 букве
+        "  ",                     # пусто
+    ]
+    for name in bad:
+        assert not app.validate_full_name(name), f"должно быть невалидно: {name!r}"
+
+
+def test_full_name_accepts_valid():
+    """Корректные ФИО (в т.ч. с дефисом) проходят."""
+    good = [
+        "Абдуллин Венер Наилевич",
+        "Иванов Иван Иванович",
+        "Петров-Водкин Кузьма Сергеевич",
+    ]
+    for name in good:
+        assert app.validate_full_name(name), f"должно быть валидно: {name!r}"
 
 
 if __name__ == "__main__":

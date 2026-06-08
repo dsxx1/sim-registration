@@ -409,10 +409,6 @@
             <span>→</span>
             <span>ФИО: фамилия, имя, отчество полностью</span>
         </div>
-        <div class="info-row">
-            <span>→</span>
-            <span>Лимит: 6 разных номеров в час с одного устройства</span>
-        </div>
     </div>
 </div>
 
@@ -479,15 +475,16 @@
         }
     }
 
+    // ФИО: ровно 3 слова, каждое — минимум 2 буквы (без сокращений/инициалов)
     function validateName(name) {
-        name = name.trim();
+        name = name.trim().replace(/\s+/g, ' ');
         if (name.length < 5 || name.length > 50) return false;
-        
-        const words = name.split(/\s+/);
+
+        const words = name.split(' ');
         if (words.length !== 3) return false;
-        
-        const pattern = /^[а-яА-ЯёЁa-zA-Z\s\-]+$/;
-        return pattern.test(name);
+
+        const wordRe = /^[а-яА-ЯёЁa-zA-Z]+(?:-[а-яА-ЯёЁa-zA-Z]+)*$/;
+        return words.every(w => w.length >= 2 && wordRe.test(w));
     }
 
     document.getElementById('phone').addEventListener('input', function () {
@@ -595,7 +592,7 @@
                 this.classList.add('valid');
                 this.classList.remove('invalid');
             } else {
-                showStatus(status, 'err', 'Введите ФИО полностью: фамилия, имя, отчество');
+                showStatus(status, 'err', 'Введите ФИО полностью, без сокращений: Фамилия Имя Отчество');
                 this.classList.add('invalid');
                 this.classList.remove('valid');
             }
