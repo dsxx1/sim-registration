@@ -319,7 +319,7 @@ def check_phone_api():
         if not valid_check.data:
             return jsonify({
                 'valid': False,
-                'message': f'❌ Номер не найден в базе разрешенных номеров.\nОсталось попыток: {attempts_left}'
+                'message': f'Номер не найден в базе разрешённых номеров. Осталось попыток: {attempts_left}'
             }), 404
         
         # Проверка существующей регистрации
@@ -340,7 +340,7 @@ def check_phone_api():
             'valid': True,
             'phone': phone,
             'attempts_left': attempts_left,
-            'message': f'✅ Номер подтверждён. Осталось попыток: {attempts_left}'
+            'message': f'Номер подтверждён. Осталось попыток: {attempts_left}'
         })
         
     except Exception as e:
@@ -400,7 +400,7 @@ def register_sim():
         prefix = "пере" if is_reregister else ""
         return jsonify({
             'success': True,
-            'message': f'✅ SIM-карта успешно {prefix}зарегистрирована!\n📱 {phone}\n🏢 {organization}\n👤 {full_name}'
+            'message': f'SIM-карта успешно {prefix}зарегистрирована\nНомер: {phone}\nОрганизация: {organization}\nСотрудник: {full_name}'
         })
         
     except Exception as e:

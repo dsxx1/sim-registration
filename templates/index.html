@@ -177,6 +177,21 @@
         .phone-status.err { color: var(--red); }
         .phone-status.warn { color: var(--yellow); }
 
+        /* Монохромная иконка статуса (не эмодзи) — наследует цвет текста */
+        .st-ico {
+            width: 13px;
+            height: 13px;
+            vertical-align: -2px;
+            margin-right: 5px;
+            fill: none;
+            stroke: currentColor;
+            stroke-width: 2.5;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            flex: none;
+        }
+        .st-ico.spin { animation: spin 0.8s linear infinite; }
+
         .attempts-badge {
             display: inline-flex;
             align-items: center;
@@ -305,6 +320,7 @@
             line-height: 1.6;
             color: var(--yellow);
             font-family: var(--font-mono);
+            white-space: pre-line;
         }
 
         .divider {
@@ -334,9 +350,16 @@
 <div class="card">
     <div class="card-header">
         <div class="logo-row">
-            <div class="logo-icon">📱</div>
+            <div class="logo-icon">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="6" y="2" width="12" height="20" rx="2.5"/>
+                    <line x1="11" y1="18" x2="13" y2="18"/>
+                </svg>
+            </div>
             <div>
                 <div class="card-title">Регистрация SIM-карт</div>
+                <div class="card-subtitle">внутренняя система · для сотрудников</div>
             </div>
         </div>
     </div>
@@ -351,7 +374,7 @@
         <div id="rereg-box"></div>
 
         <div class="field">
-            <label for="phone">📱 Номер телефона</label>
+            <label for="phone">Номер телефона</label>
             <div class="input-wrap">
                 <span class="prefix">+7</span>
                 <input type="tel" id="phone" class="has-prefix" inputmode="numeric"
@@ -361,14 +384,14 @@
         </div>
 
         <div class="field" id="org-field" style="display: none;">
-            <label for="organization">🏢 Организация</label>
+            <label for="organization">Организация</label>
             <select id="organization">
                 <option value="">— Загрузка... —</option>
             </select>
         </div>
 
         <div class="field" id="name-field" style="display: none;">
-            <label for="fullName">👤 ФИО полностью</label>
+            <label for="fullName">ФИО полностью</label>
             <input type="text" id="fullName"
                    placeholder="Иванов Иван Иванович" maxlength="50">
             <div id="name-status" class="phone-status" style="margin-top: 6px;" aria-live="polite"></div>
@@ -413,6 +436,31 @@
     function attemptsBadge(left) {
         const low = left <= 1 ? ' low' : '';
         return `<span class="attempts-badge${low}">попыток: ${left}</span>`;
+    }
+
+    // Монохромные SVG-иконки статуса вместо эмодзи
+    const ICONS = {
+        ok:   'M20 6 9 17l-5-5',
+        err:  'M18 6 6 18M6 6l12 12',
+        warn: 'M12 9v4M12 17h.01M10.3 4 2 18a2 2 0 0 0 1.7 3h16.6a2 2 0 0 0 1.7-3L13.7 4a2 2 0 0 0-3.4 0z',
+        wait: 'M21 12a9 9 0 1 1-6.2-8.5',
+    };
+    function icoSvg(kind, spin) {
+        const d = ICONS[kind];
+        if (!d) return '';
+        return `<svg class="st-ico${spin ? ' spin' : ''}" viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg>`;
+    }
+    // kind: ok | err | warn | wait. opts.html — вставить HTML (бейдж), иначе текст
+    function showStatus(el, kind, content, opts = {}) {
+        const cls = { ok: 'ok', err: 'err', warn: 'warn', wait: '' }[kind] ?? '';
+        el.className = 'phone-status ' + cls;
+        const spin = kind === 'wait';
+        if (opts.html) {
+            el.innerHTML = icoSvg(kind, spin) + content;
+        } else {
+            el.innerHTML = icoSvg(kind, spin);
+            el.appendChild(document.createTextNode(content));
+        }
     }
 
     async function loadOrganizations() {
@@ -460,7 +508,7 @@
         updateBtn();
 
         if (phone.length === 10 && phone.startsWith('9')) {
-            status.textContent = '⏳ Проверка...';
+            showStatus(status, 'wait', 'Проверка…');
             checkTimeout = setTimeout(() => checkPhone(phone), 500);
         }
     });
@@ -479,36 +527,33 @@
             const d = await r.json();
 
             if (r.status === 403 && d.blocked) {
-                status.textContent = '🔒 ' + d.message;
-                status.className = 'phone-status err';
+                showStatus(status, 'err', d.message);
                 input.classList.add('invalid');
                 isPhoneValid = false;
             } else if (d.exists) {
-                rereg.innerHTML =
-                    `⚠️ Номер уже зарегистрирован:\n` +
-                    `👤 ${d.full_name}\n🏢 ${d.organization}\n📅 ${d.created_at}\n\n` +
-                    `При сохранении будет выполнена перерегистрация.`;
+                rereg.textContent =
+                    'Номер уже зарегистрирован\n' +
+                    `ФИО: ${d.full_name}\n` +
+                    `Организация: ${d.organization}\n` +
+                    `Дата: ${d.created_at}\n\n` +
+                    'При сохранении будет выполнена перерегистрация.';
                 rereg.style.display = 'block';
-                status.innerHTML = `${attemptsBadge(d.attempts_left)} Будет перерегистрация`;
-                status.className = 'phone-status warn';
+                showStatus(status, 'warn', `${attemptsBadge(d.attempts_left)} Будет перерегистрация`, {html: true});
                 input.classList.add('valid');
                 isPhoneValid = true;
                 showOrgField();
             } else if (d.valid) {
-                status.innerHTML = `${attemptsBadge(d.attempts_left)} Номер подтверждён`;
-                status.className = 'phone-status ok';
+                showStatus(status, 'ok', `${attemptsBadge(d.attempts_left)} Номер подтверждён`, {html: true});
                 input.classList.add('valid');
                 isPhoneValid = true;
                 showOrgField();
             } else {
-                status.textContent = (d.message || 'Номер не найден в системе');
-                status.className = 'phone-status err';
+                showStatus(status, 'err', d.message || 'Номер не найден в системе');
                 input.classList.add('invalid');
                 isPhoneValid = false;
             }
         } catch {
-            status.textContent = 'Ошибка проверки';
-            status.className = 'phone-status err';
+            showStatus(status, 'err', 'Ошибка проверки');
             isPhoneValid = false;
         }
         updateBtn();
@@ -546,13 +591,11 @@
         
         if (name.length > 0) {
             if (validateName(name)) {
-                status.textContent = '✅ ФИО корректно';
-                status.className = 'phone-status ok';
+                showStatus(status, 'ok', 'ФИО корректно');
                 this.classList.add('valid');
                 this.classList.remove('invalid');
             } else {
-                status.textContent = '❌ Введите ФИО полностью: фамилия, имя, отчество';
-                status.className = 'phone-status err';
+                showStatus(status, 'err', 'Введите ФИО полностью: фамилия, имя, отчество');
                 this.classList.add('invalid');
                 this.classList.remove('valid');
             }
